@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
+#include <map>
 
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
@@ -33,6 +34,10 @@ private:
     vk::raii::Context                   context;
     vk::raii::Instance                  instance        = nullptr;
     vk::raii::DebugUtilsMessengerEXT    debugMessenger  = nullptr;
+    vk::raii::PhysicalDevice            physicalDevice  = nullptr;
+    vk::raii::Device                    device          = nullptr;
+    vk::raii::Queue                     graphicsQueue   = nullptr;
+    std::vector<const char*>            requiredDeviceExtension = { vk::KHRSwapchainExtensionName };
 
     void initWindow() {
         glfwInit();
@@ -46,6 +51,100 @@ private:
     void initVulkan() {
         createInstance();
         setupDebugMessenger();
+        pickPhysicalDevice();
+        createLogicalDevice();
+    }
+
+    void pickPhysicalDevice()
+    {
+        std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
+        auto const devIter = std::ranges::find_if(
+            physicalDevices, 
+            [&](auto const& physicalDevice) {
+                return isDeviceSuitable(physicalDevice); 
+            }
+        );
+        if (devIter == physicalDevices.end())
+        {
+            throw std::runtime_error("failed to find a suitable GPU!");
+        }
+        physicalDevice = *devIter;
+    }
+
+    void createLogicalDevice()
+    {
+        std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
+
+        auto graphicsQueueFamilyProperty = std::ranges::find_if(
+            queueFamilyProperties, 
+            [](auto const& qfp) {
+                return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0); 
+            }
+        );
+        assert(graphicsQueueFamilyProperty != queueFamilyProperties.end() && "No graphics queue family found!");
+
+        auto graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties.begin(), graphicsQueueFamilyProperty));
+
+        vk::StructureChain<vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceVulkan11Features,
+            vk::PhysicalDeviceVulkan13Features,
+            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+            featureChain{};
+        featureChain.get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters = true;
+        featureChain.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering = true;
+        featureChain.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState = true;
+
+        float queuePriority = 0.5f;
+        vk::DeviceQueueCreateInfo deviceQueueCreateInfo{};
+        deviceQueueCreateInfo.queueFamilyIndex = graphicsIndex;
+        deviceQueueCreateInfo.queueCount = 1;
+        deviceQueueCreateInfo.pQueuePriorities = &queuePriority;
+
+        vk::DeviceCreateInfo deviceCreateInfo{};
+        deviceCreateInfo.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>();
+        deviceCreateInfo.queueCreateInfoCount = 1;
+        deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
+        deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(requiredDeviceExtension.size());
+        deviceCreateInfo.ppEnabledExtensionNames = requiredDeviceExtension.data();
+
+        device = vk::raii::Device(physicalDevice, deviceCreateInfo);
+        graphicsQueue = vk::raii::Queue(device, graphicsIndex, 0);
+    }
+
+    bool isDeviceSuitable(vk::raii::PhysicalDevice const& physicalDevice)
+    {
+        bool supportsVulkan1_3 = physicalDevice.getProperties().apiVersion >= vk::ApiVersion13;
+
+        auto queueFamilies = physicalDevice.getQueueFamilyProperties();
+        bool supportsGraphics = std::ranges::any_of(
+            queueFamilies,
+            [](auto const& qfp) {
+                return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics);
+            }
+        );
+
+        auto availableDeviceExtensions = physicalDevice.enumerateDeviceExtensionProperties();
+        bool supportsAllRequiredExtensions = std::ranges::all_of(
+            requiredDeviceExtension,
+            [&availableDeviceExtensions](auto const& requiredDeviceExtension) {
+                return std::ranges::any_of(
+                    availableDeviceExtensions,
+                    [requiredDeviceExtension](auto const& availableDeviceExtension) {
+                        return strcmp(availableDeviceExtension.extensionName, requiredDeviceExtension) == 0;
+                    }
+                );
+            }
+        );
+
+        auto features = physicalDevice.template getFeatures2<vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceVulkan11Features,
+            vk::PhysicalDeviceVulkan13Features,
+            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+        bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters &&
+            features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
+            features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
+
+        return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
     }
 
     void setupDebugMessenger()
