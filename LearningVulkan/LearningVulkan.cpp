@@ -9,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
+#include <fstream>
 #include <map>
 
 constexpr uint32_t WIDTH = 800;
@@ -26,7 +27,8 @@ constexpr bool enableValidationLayers = true;
 
 class HelloTriangleApplication {
 public:
-    void run() {
+    void run()
+    {
         initWindow();
         initVulkan();
         mainLoop();
@@ -67,6 +69,50 @@ private:
         pickPhysicalDevice();
         createLogicalDevice();
         createSwapChain();
+        createImageViews();
+        createGraphicsPipeline();
+    }
+
+    void createImageViews()
+    {
+        assert(swapChainImageViews.empty());
+
+        vk::ImageViewCreateInfo imageViewCreateInfo{};
+        imageViewCreateInfo.viewType = vk::ImageViewType::e2D;
+        imageViewCreateInfo.format = swapChainSurfaceFormat.format;
+        imageViewCreateInfo.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+        for (auto& image : swapChainImages)
+        {
+            imageViewCreateInfo.image = image;
+            swapChainImageViews.emplace_back(device, imageViewCreateInfo);
+        }
+    }
+
+    [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const
+    {
+        vk::ShaderModuleCreateInfo createInfo{};
+        createInfo.codeSize = code.size() * sizeof(char);
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        return vk::raii::ShaderModule(device, createInfo);
+    }
+
+    void createGraphicsPipeline()
+    {
+        vk::raii::ShaderModule shaderModule = createShaderModule(readFile("shaders/slang.spv"));
+
+        vk::PipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.stage = vk::ShaderStageFlagBits::eVertex;
+        vertShaderStageInfo.module = shaderModule;
+        vertShaderStageInfo.pName = "vertMain";
+        vertShaderStageInfo.pSpecializationInfo = nullptr;
+
+        vk::PipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.stage = vk::ShaderStageFlagBits::eFragment;
+        fragShaderStageInfo.module = shaderModule;
+        fragShaderStageInfo.pName = "fragMain";
+        fragShaderStageInfo.pSpecializationInfo = nullptr;
+
+        std::vector<vk::PipelineShaderStageCreateInfo> shaderStages = { vertShaderStageInfo, fragShaderStageInfo };
     }
 
     void createSwapChain()
@@ -362,6 +408,23 @@ private:
             std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
         }
         return vk::False;
+    }
+
+    static std::vector<char> readFile(const std::string& filename)
+    {
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+        if (!file.is_open()) {
+            throw std::runtime_error("failed to open file!");
+        }
+
+        std::vector<char> buffer(file.tellg());
+
+        file.seekg(0, std::ios::beg);
+        file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        file.close();
+
+        return buffer;
     }
 
     void mainLoop() {
