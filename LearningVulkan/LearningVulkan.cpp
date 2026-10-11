@@ -49,6 +49,9 @@ private:
     vk::raii::Pipeline                  graphicsPipeline        = nullptr;
     vk::raii::CommandPool               commandPool             = nullptr;
     vk::raii::CommandBuffer             commandBuffer           = nullptr;
+    vk::raii::Semaphore                 presentCompleteSemaphore= nullptr;
+    vk::raii::Semaphore                 renderFinishedSemaphore = nullptr;
+    vk::raii::Fence                     drawFence               = nullptr;
     std::vector<vk::Image>              swapChainImages;
     std::vector<vk::raii::ImageView>    swapChainImageViews;
     vk::Extent2D                        swapChainExtent;
@@ -65,7 +68,7 @@ private:
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-        window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+        window = glfwCreateWindow(WIDTH, HEIGHT, "Let's Vulkan!", nullptr, nullptr);
     }
 
     void initVulkan()
@@ -80,11 +83,65 @@ private:
         createGraphicsPipeline();
         createCommandPool();
         createCommandBuffer();
+        createSyncObjects();
     }
 
-    void recordCommandBuffer(uint32_t imageIndex)
+    void createSyncObjects()
     {
-        
+        presentCompleteSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+        renderFinishedSemaphore = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
+        vk::FenceCreateInfo fenceInfo{};
+        fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;
+
+        drawFence = vk::raii::Fence(device, fenceInfo);
+    }
+
+    void drawFrame()
+    {
+        auto fenceResult = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
+        if (fenceResult != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("failed to wait for fence!");
+        }
+        device.resetFences(*drawFence);
+
+        auto [result, imageIndex] = swapChain.acquireNextImage(UINT64_MAX, *presentCompleteSemaphore, nullptr);
+
+        recordCommandBuffer(imageIndex);
+
+        queue.waitIdle();
+
+        vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+        vk::SubmitInfo submitInfo{};
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = &*presentCompleteSemaphore;
+        submitInfo.pWaitDstStageMask = &waitDestinationStageMask;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &*commandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &*renderFinishedSemaphore;
+
+        queue.submit(submitInfo, *drawFence);
+
+        vk::PresentInfoKHR presentInfoKHR{};
+        presentInfoKHR.waitSemaphoreCount = 1;
+        presentInfoKHR.pWaitSemaphores = &*renderFinishedSemaphore;
+        presentInfoKHR.swapchainCount = 1;
+        presentInfoKHR.pSwapchains = &*swapChain;
+        presentInfoKHR.pImageIndices = &imageIndex;
+
+        result = queue.presentKHR(presentInfoKHR);
+
+        switch (result)
+        {
+        case vk::Result::eSuccess:
+            break;
+        case vk::Result::eSuboptimalKHR:
+            std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
+            break;
+        default:
+            break;
+        }
     }
 
     void transition_image_layout(
@@ -117,6 +174,51 @@ private:
         dependency_info.imageMemoryBarrierCount = 1;
         dependency_info.pImageMemoryBarriers = &barrier;
         commandBuffer.pipelineBarrier2(dependency_info);
+    }
+
+    void recordCommandBuffer(uint32_t imageIndex)
+    {
+        commandBuffer.begin({});
+
+        transition_image_layout(
+            imageIndex,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            {},
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput
+        );
+        vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+        vk::RenderingAttachmentInfo attachmentInfo = {};
+        attachmentInfo.imageView = swapChainImageViews[imageIndex];
+        attachmentInfo.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        attachmentInfo.loadOp = vk::AttachmentLoadOp::eClear;
+        attachmentInfo.storeOp = vk::AttachmentStoreOp::eStore;
+        attachmentInfo.clearValue = clearColor;
+        vk::RenderingInfo renderingInfo = {};
+        renderingInfo.renderArea = { .offset = { 0, 0 }, .extent = swapChainExtent };
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments = &attachmentInfo;
+
+        commandBuffer.beginRendering(renderingInfo);
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
+        commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+        commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
+        commandBuffer.draw(3, 1, 0, 0);
+        commandBuffer.endRendering();
+
+        transition_image_layout(
+            imageIndex,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            vk::ImageLayout::ePresentSrcKHR,
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            {},
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eBottomOfPipe
+        );
+        commandBuffer.end();
     }
 
     void createCommandBuffer()
@@ -504,7 +606,6 @@ private:
             throw std::runtime_error("Required extension not supported: " + std::string(*unsupportedPropertyIt));
         }
 
-
         vk::InstanceCreateInfo createInfo{};
         createInfo.pApplicationInfo = &appInfo;
         createInfo.enabledLayerCount = static_cast<uint32_t>(requiredLayers.size());
@@ -559,13 +660,18 @@ private:
         return buffer;
     }
 
-    void mainLoop() {
-        while (!glfwWindowShouldClose(window)) {
+    void mainLoop()
+    {
+        while (!glfwWindowShouldClose(window))
+        {
             glfwPollEvents();
+            drawFrame();
         }
+        device.waitIdle();
     }
 
-    void cleanup() {
+    void cleanup()
+    {
         glfwDestroyWindow(window);
 
         glfwTerminate();
