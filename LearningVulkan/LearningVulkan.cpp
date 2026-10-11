@@ -45,11 +45,18 @@ private:
     vk::raii::Queue                     queue                   = nullptr;
     vk::raii::SurfaceKHR                surface                 = nullptr;
     vk::raii::SwapchainKHR              swapChain               = nullptr;
+    vk::raii::PipelineLayout            pipelineLayout          = nullptr;
+    vk::raii::Pipeline                  graphicsPipeline        = nullptr;
+    vk::raii::CommandPool               commandPool             = nullptr;
+    vk::raii::CommandBuffer             commandBuffer           = nullptr;
     std::vector<vk::Image>              swapChainImages;
-    vk::SurfaceFormatKHR                swapChainSurfaceFormat;
-    vk::Extent2D                        swapChainExtent;
     std::vector<vk::raii::ImageView>    swapChainImageViews;
+    vk::Extent2D                        swapChainExtent;
+    vk::SurfaceFormatKHR                swapChainSurfaceFormat;
+
+
     std::vector<const char*>            requiredDeviceExtension = { vk::KHRSwapchainExtensionName };
+    uint32_t queueIndex = ~0;
 
     void initWindow()
     {
@@ -71,6 +78,64 @@ private:
         createSwapChain();
         createImageViews();
         createGraphicsPipeline();
+        createCommandPool();
+        createCommandBuffer();
+    }
+
+    void recordCommandBuffer(uint32_t imageIndex)
+    {
+        
+    }
+
+    void transition_image_layout(
+        uint32_t                imageIndex,
+        vk::ImageLayout         old_layout,
+        vk::ImageLayout         new_layout,
+        vk::AccessFlags2        src_access_mask,
+        vk::AccessFlags2        dst_access_mask,
+        vk::PipelineStageFlags2 src_stage_mask,
+        vk::PipelineStageFlags2 dst_stage_mask)
+    {
+        vk::ImageMemoryBarrier2 barrier = {};
+        barrier.srcStageMask = src_stage_mask;
+        barrier.srcAccessMask = src_access_mask;
+        barrier.dstStageMask = dst_stage_mask;
+        barrier.dstAccessMask = dst_access_mask;
+        barrier.oldLayout = old_layout;
+        barrier.newLayout = new_layout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = swapChainImages[imageIndex];
+        barrier.subresourceRange = {
+               barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor,
+               barrier.subresourceRange.baseMipLevel = 0,
+               barrier.subresourceRange.levelCount = 1,
+               barrier.subresourceRange.baseArrayLayer = 0,
+               barrier.subresourceRange.layerCount = 1 };
+        vk::DependencyInfo dependency_info = {};
+        dependency_info.dependencyFlags = {};
+        dependency_info.imageMemoryBarrierCount = 1;
+        dependency_info.pImageMemoryBarriers = &barrier;
+        commandBuffer.pipelineBarrier2(dependency_info);
+    }
+
+    void createCommandBuffer()
+    {
+        vk::CommandBufferAllocateInfo allocInfo{}; 
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = vk::CommandBufferLevel::ePrimary;
+        allocInfo.commandBufferCount = 1;
+
+        commandBuffer = std::move(vk::raii::CommandBuffers(device, allocInfo).front());
+    }
+
+    void createCommandPool()
+    {
+        vk::CommandPoolCreateInfo poolInfo{}; 
+        poolInfo.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        poolInfo.queueFamilyIndex = queueIndex;
+
+        commandPool = vk::raii::CommandPool(device, poolInfo);
     }
 
     void createImageViews()
@@ -112,7 +177,75 @@ private:
         fragShaderStageInfo.pName = "fragMain";
         fragShaderStageInfo.pSpecializationInfo = nullptr;
 
-        std::vector<vk::PipelineShaderStageCreateInfo> shaderStages = { vertShaderStageInfo, fragShaderStageInfo };
+        vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+        vk::PipelineVertexInputStateCreateInfo   vertexInputInfo;
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
+
+        vk::PipelineViewportStateCreateInfo viewportState{}; viewportState.viewportCount = 1; viewportState.scissorCount = 1;
+
+        vk::PipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.depthClampEnable = vk::False;
+        rasterizer.rasterizerDiscardEnable = vk::False;
+        rasterizer.polygonMode = vk::PolygonMode::eFill;
+        rasterizer.cullMode = vk::CullModeFlagBits::eBack;
+        rasterizer.frontFace = vk::FrontFace::eClockwise;
+        rasterizer.depthBiasEnable = vk::False;
+        rasterizer.lineWidth = 1.0f;
+
+        vk::PipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
+        multisampling.sampleShadingEnable = vk::False;
+
+        vk::PipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.blendEnable = vk::False;
+        colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+
+        vk::PipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.logicOpEnable = vk::False;
+        colorBlending.logicOp = vk::LogicOp::eCopy;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        std::vector<vk::DynamicState>      dynamicStates = { vk::DynamicState::eViewport, vk::DynamicState::eScissor };
+        vk::PipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.setLayoutCount = 0;
+        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
+
+        vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo{};
+        pipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        pipelineRenderingCreateInfo.pColorAttachmentFormats = &swapChainSurfaceFormat.format;
+        vk::StructureChain<
+            vk::GraphicsPipelineCreateInfo,
+            vk::PipelineRenderingCreateInfo
+        > pipelineCreateInfoChain{};
+
+        auto& pipelineCreateInfo = pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>();
+
+        pipelineCreateInfo.stageCount = 2;
+        pipelineCreateInfo.pStages = shaderStages;
+        pipelineCreateInfo.pVertexInputState = &vertexInputInfo;
+        pipelineCreateInfo.pInputAssemblyState = &inputAssembly;
+        pipelineCreateInfo.pViewportState = &viewportState;
+        pipelineCreateInfo.pRasterizationState = &rasterizer;
+        pipelineCreateInfo.pMultisampleState = &multisampling;
+        pipelineCreateInfo.pColorBlendState = &colorBlending;
+        pipelineCreateInfo.pDynamicState = &dynamicState;
+        pipelineCreateInfo.layout = pipelineLayout;
+        pipelineCreateInfo.renderPass = nullptr;
+
+        auto& renderingInfo = pipelineCreateInfoChain.get<vk::PipelineRenderingCreateInfo>();
+
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachmentFormats = &swapChainSurfaceFormat.format;
+
+        graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>());
     }
 
     void createSwapChain()
@@ -220,7 +353,6 @@ private:
     {
         std::vector<vk::QueueFamilyProperties> queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
 
-        uint32_t queueIndex = ~0;
         for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++)
         {
             if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
