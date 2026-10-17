@@ -1,16 +1,19 @@
 ﻿#define NOMINMAX
+#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #include <vulkan/vulkan_raii.hpp>
 #define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#include <glm/glm.hpp>
 
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <array>
 
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
@@ -25,6 +28,31 @@ constexpr bool enableValidationLayers = false;
 #else
 constexpr bool enableValidationLayers = true;
 #endif
+
+
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+
+    static vk::VertexInputBindingDescription getBindingDescription()
+    {
+        return { .binding = 0, .stride = sizeof(Vertex), .inputRate = vk::VertexInputRate::eVertex };
+    }
+
+    static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+    {
+        return { { { .location = 0, .binding = 0, .format = vk::Format::eR32G32Sfloat, .offset = offsetof(Vertex, pos) },
+                 { .location = 1, .binding = 0, .format = vk::Format::eR32G32B32Sfloat, .offset = offsetof(Vertex, color) } } };
+    }
+};
+
+const std::vector<Vertex> vertices = {
+    { { 0.0f,  0.75f },{ 0.0f, 1.0f, 1.0f } }, // Top: cyan
+    { { 0.75f, 0.0f },{ 1.0f, 0.0f, 1.0f } }, // Right: magenta
+    { { 0.0f, -0.75f },{ 0.2f, 0.0f, 1.0f } }, // Bottom: blue
+    { { -0.75f, 0.0f },{ 0.0f, 1.0f, 0.4f } }  // Left: green
+};
+
 
 class HelloTriangleApplication {
 public:
@@ -49,6 +77,8 @@ private:
     vk::raii::PipelineLayout            pipelineLayout          = nullptr;
     vk::raii::Pipeline                  graphicsPipeline        = nullptr;
     vk::raii::CommandPool               commandPool             = nullptr;
+    vk::raii::Buffer                    vertexBuffer            = nullptr;
+    vk::raii::DeviceMemory              vertexBufferMemory      = nullptr;
     std::vector<vk::raii::CommandBuffer>             commandBuffers;
     std::vector<vk::raii::Semaphore>                 presentCompleteSemaphores;
     std::vector<vk::raii::Semaphore>                 renderFinishedSemaphores;
@@ -94,8 +124,44 @@ private:
         createImageViews();
         createGraphicsPipeline();
         createCommandPool();
+        createVertexBuffer();
         createCommandBuffer();
         createSyncObjects();
+    }
+
+    void createVertexBuffer()
+    {
+        vk::BufferCreateInfo bufferInfo{ .size = sizeof(vertices[0]) * vertices.size(),
+                                        .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+                                        .sharingMode = vk::SharingMode::eExclusive };
+        vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+
+        vk::MemoryRequirements memRequirements = vertexBuffer.getMemoryRequirements();
+        vk::MemoryAllocateInfo memoryAllocateInfo{
+            .allocationSize = memRequirements.size,
+            .memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent) };
+        vertexBufferMemory = vk::raii::DeviceMemory(device, memoryAllocateInfo);
+
+        vertexBuffer.bindMemory(*vertexBufferMemory, 0);
+
+        void* data = vertexBufferMemory.mapMemory(0, bufferInfo.size);
+        memcpy(data, vertices.data(), bufferInfo.size);
+        vertexBufferMemory.unmapMemory();
+    }
+
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+    {
+        vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+        {
+            if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+            {
+                return i;
+            }
+        }
+
+        throw std::runtime_error("failed to find suitable memory type!");
     }
 
     void cleanupSwapChain()
@@ -293,7 +359,8 @@ private:
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
         commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
         commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-        commandBuffer.draw(3, 1, 0, 0);
+        commandBuffer.bindVertexBuffers(0, *vertexBuffer, { 0 });
+        commandBuffer.draw(4, 1, 0, 0);
         commandBuffer.endRendering();
 
         transition_image_layout(
@@ -352,7 +419,7 @@ private:
 
     void createGraphicsPipeline()
     {
-        vk::raii::ShaderModule shaderModule = createShaderModule(readFile("shaders/slang.spv"));
+        vk::raii::ShaderModule shaderModule = createShaderModule(readFile("slang.spv"));
 
         vk::PipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.stage = vk::ShaderStageFlagBits::eVertex;
@@ -368,7 +435,13 @@ private:
 
         vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
-        vk::PipelineVertexInputStateCreateInfo   vertexInputInfo;
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        vk::PipelineVertexInputStateCreateInfo vertexInputInfo{ .vertexBindingDescriptionCount = 1,
+                                                                .pVertexBindingDescriptions = &bindingDescription,
+                                                                .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
+                                                                .pVertexAttributeDescriptions = attributeDescriptions.data() };
+
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
 
