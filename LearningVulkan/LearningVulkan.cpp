@@ -6,8 +6,11 @@
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
@@ -70,6 +73,13 @@ const std::vector<uint16_t> indices = {
     7, 8, 9
 };
 
+struct UniformBufferObject
+{
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+};
+
 class HelloTriangleApplication {
 public:
     void run()
@@ -90,6 +100,7 @@ private:
     vk::raii::Queue                     queue                   = nullptr;
     vk::raii::SurfaceKHR                surface                 = nullptr;
     vk::raii::SwapchainKHR              swapChain               = nullptr;
+    vk::raii::DescriptorSetLayout       descriptorSetLayout     = nullptr;
     vk::raii::PipelineLayout            pipelineLayout          = nullptr;
     vk::raii::Pipeline                  graphicsPipeline        = nullptr;
     vk::raii::CommandPool               commandPool             = nullptr;
@@ -97,6 +108,9 @@ private:
     vk::raii::DeviceMemory              vertexBufferMemory      = nullptr;
     vk::raii::Buffer                    indexBuffer             = nullptr;
     vk::raii::DeviceMemory              indexBufferMemory       = nullptr;
+    std::vector<vk::raii::Buffer>       uniformBuffers;
+    std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+    std::vector<void*>                  uniformBuffersMapped;
     std::vector<vk::raii::CommandBuffer>             commandBuffers;
     std::vector<vk::raii::Semaphore>                 presentCompleteSemaphores;
     std::vector<vk::raii::Semaphore>                 renderFinishedSemaphores;
@@ -140,27 +154,56 @@ private:
         createLogicalDevice();
         createSwapChain();
         createImageViews();
+        createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
         createVertexBuffer();
         createIndexBuffer();
+        createUniformBuffers();
         createCommandBuffer();
         createSyncObjects();
+    }
+
+    void createUniformBuffers()
+    {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
+            auto [buffer, bufferMem] = createBuffer(bufferSize,
+                vk::BufferUsageFlagBits::eUniformBuffer,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            uniformBuffers.emplace_back(std::move(buffer));
+            uniformBuffersMemory.emplace_back(std::move(bufferMem));
+            uniformBuffersMapped.emplace_back(uniformBuffersMemory.back().mapMemory(0, bufferSize));
+        }
+    }
+
+    void createDescriptorSetLayout()
+    {
+        vk::DescriptorSetLayoutBinding uboLayoutBinding{
+            .binding = 0,
+            .descriptorType = vk::DescriptorType::eUniformBuffer,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eVertex };
+        vk::DescriptorSetLayoutCreateInfo layoutInfo{ .bindingCount = 1, .pBindings = &uboLayoutBinding };
+        descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
     }
 
     void createIndexBuffer()
     {
         vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
 
-        auto [stagingBuffer, stagingBufferMemory] =
-            createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        auto [stagingBuffer, stagingBufferMemory] = createBuffer(bufferSize, 
+            vk::BufferUsageFlagBits::eTransferSrc, 
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
         void* data = stagingBufferMemory.mapMemory(0, bufferSize);
         memcpy(data, indices.data(), (size_t)bufferSize);
         stagingBufferMemory.unmapMemory();
 
-        std::tie(indexBuffer, indexBufferMemory) =
-            createBuffer(bufferSize, vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        std::tie(indexBuffer, indexBufferMemory) = createBuffer(bufferSize, 
+            vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst, 
+            vk::MemoryPropertyFlagBits::eDeviceLocal);
 
         copyBuffer(stagingBuffer, indexBuffer, bufferSize);
     }
@@ -301,6 +344,7 @@ private:
             assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
             throw std::runtime_error("failed to acquire swap chain image!");
         }
+        updateUniformBuffer(frameIndex);
 
         device.resetFences(*inFlightFences[frameIndex]);
 
@@ -349,6 +393,21 @@ private:
         }
 
         frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
+    }
+
+    void updateUniformBuffer(uint32_t currentImage)
+    {
+        static auto startTime = std::chrono::high_resolution_clock::now();
+
+        auto  currentTime = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float>(currentTime - startTime).count();
+
+        UniformBufferObject ubo{};
+        ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 10.0f);
+
+        memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
     }
 
     void transition_image_layout(
@@ -532,7 +591,8 @@ private:
         dynamicState.pDynamicStates = dynamicStates.data();
 
         vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.setLayoutCount = 0;
+        pipelineLayoutInfo.setLayoutCount = 1;
+		pipelineLayoutInfo.pSetLayouts = &*descriptorSetLayout;
         pipelineLayoutInfo.pushConstantRangeCount = 0;
         pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
