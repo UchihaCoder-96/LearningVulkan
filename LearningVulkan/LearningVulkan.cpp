@@ -10,13 +10,20 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-#include <chrono>
-#include <iostream>
-#include <stdexcept>
-#include <cstdlib>
-#include <fstream>
-#include <map>
+#include <algorithm>
 #include <array>
+#include <assert.h>
+#include <chrono>   
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <vector>
+#include <cmath>
+
 
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
@@ -50,16 +57,16 @@ struct Vertex {
 };
 
 const std::vector<Vertex> vertices = {
-    { { 0.0f,     -0.5f },{ 1.0f, 0.0f, 0.0f } },
-    { { 0.1176f,  -0.1618f },{ 1.0f, 0.5f, 0.0f } },
-    { { 0.4755f,  -0.1545f },{ 1.0f, 1.0f, 0.0f } },
-    { { 0.1902f,   0.0618f },{ 0.0f, 1.0f, 0.0f } },
-    { { 0.2939f,   0.4045f },{ 0.0f, 1.0f, 1.0f } },
-    { { 0.0f,      0.2f },{ 0.0f, 0.0f, 1.0f } },
-    { { -0.2939f,   0.4045f },{ 0.5f, 0.0f, 1.0f } },
-    { { -0.1902f,   0.0618f },{ 1.0f, 0.0f, 1.0f } },
-    { { -0.4755f,  -0.1545f },{ 1.0f, 0.5f, 0.5f } },
-    { { -0.1176f,  -0.1618f },{ 0.5f, 0.5f, 1.0f } }
+    { { 0.0f,      -1.25f },{ 1.0f, 0.0f, 0.0f } },
+    { { 0.2940f,   -0.4045f },{ 1.0f, 0.5f, 0.0f } },
+    { { 1.1888f,   -0.3863f },{ 1.0f, 1.0f, 0.0f } },
+    { { 0.4755f,    0.1545f },{ 0.0f, 1.0f, 0.0f } },
+    { { 0.7348f,    1.0113f },{ 0.0f, 1.0f, 1.0f } },
+    { { 0.0f,       0.5f },{ 0.0f, 0.0f, 1.0f } },
+    { { -0.7348f,   1.0113f },{ 0.5f, 0.0f, 1.0f } },
+    { { -0.4755f,   0.1545f },{ 1.0f, 0.0f, 1.0f } },
+    { { -1.1888f,  -0.3863f },{ 1.0f, 0.5f, 0.5f } },
+    { { -0.2940f,  -0.4045f },{ 0.5f, 0.5f, 1.0f } }
 };
 
 const std::vector<uint16_t> indices = {
@@ -78,6 +85,7 @@ struct UniformBufferObject
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
+    alignas(16) glm::vec4 color;
 };
 
 class HelloTriangleApplication {
@@ -103,6 +111,7 @@ private:
     vk::raii::DescriptorSetLayout       descriptorSetLayout     = nullptr;
     vk::raii::PipelineLayout            pipelineLayout          = nullptr;
     vk::raii::Pipeline                  graphicsPipeline        = nullptr;
+    vk::raii::DescriptorPool            descriptorPool          = nullptr;
     vk::raii::CommandPool               commandPool             = nullptr;
     vk::raii::Buffer                    vertexBuffer            = nullptr;
     vk::raii::DeviceMemory              vertexBufferMemory      = nullptr;
@@ -111,6 +120,7 @@ private:
     std::vector<vk::raii::Buffer>       uniformBuffers;
     std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
     std::vector<void*>                  uniformBuffersMapped;
+    std::vector<vk::raii::DescriptorSet>             descriptorSets;
     std::vector<vk::raii::CommandBuffer>             commandBuffers;
     std::vector<vk::raii::Semaphore>                 presentCompleteSemaphores;
     std::vector<vk::raii::Semaphore>                 renderFinishedSemaphores;
@@ -160,8 +170,39 @@ private:
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
+        createDescriptorPool();
+        createDescriptorSets();
         createCommandBuffer();
         createSyncObjects();
+    }
+
+    void createDescriptorPool()
+    {
+        vk::DescriptorPoolSize poolSize{ .type = vk::DescriptorType::eUniformBuffer, .descriptorCount = MAX_FRAMES_IN_FLIGHT };
+        vk::DescriptorPoolCreateInfo poolInfo{ .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, .maxSets = MAX_FRAMES_IN_FLIGHT, .poolSizeCount = 1, .pPoolSizes = &poolSize };
+        descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+    }
+
+    void createDescriptorSets()
+    {
+        std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptorSetLayout);
+        vk::DescriptorSetAllocateInfo allocInfo{ .descriptorPool = descriptorPool,
+            .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+            .pSetLayouts = layouts.data() };
+
+        descriptorSets = device.allocateDescriptorSets(allocInfo);
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vk::DescriptorBufferInfo bufferInfo{ .buffer = uniformBuffers[i], .offset = 0, .range = sizeof(UniformBufferObject) };
+            vk::WriteDescriptorSet descriptorWrite{ .dstSet = descriptorSets[i],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eUniformBuffer,
+                .pBufferInfo = &bufferInfo };
+            device.updateDescriptorSets(descriptorWrite, {});
+        }
     }
 
     void createUniformBuffers()
@@ -184,7 +225,7 @@ private:
             .binding = 0,
             .descriptorType = vk::DescriptorType::eUniformBuffer,
             .descriptorCount = 1,
-            .stageFlags = vk::ShaderStageFlagBits::eVertex };
+            .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment };
         vk::DescriptorSetLayoutCreateInfo layoutInfo{ .bindingCount = 1, .pBindings = &uboLayoutBinding };
         descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
     }
@@ -407,6 +448,11 @@ private:
         ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 10.0f);
 
+        float r = (std::sin(time) + 1.0f) * 0.5f;
+        float g = (std::sin(time + 2.094f) + 1.0f) * 0.5f;
+        float b = (std::sin(time + 4.189f) + 1.0f) * 0.5f;
+        ubo.color = glm::vec4(r, g, b, 1.0f);
+
         memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
     }
 
@@ -471,10 +517,12 @@ private:
 
         commandBuffer.beginRendering(renderingInfo);
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-        commandBuffer.setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+        // negative height flips Y for Vulkan.
+        commandBuffer.setViewport(0, vk::Viewport(0.0f, static_cast<float>(swapChainExtent.height), static_cast<float>(swapChainExtent.width), -static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
         commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
         commandBuffer.bindVertexBuffers(0, *vertexBuffer, { 0 });
         commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint16);
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[frameIndex], nullptr);
         commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
         commandBuffer.endRendering();
 
@@ -567,7 +615,7 @@ private:
         rasterizer.rasterizerDiscardEnable = vk::False;
         rasterizer.polygonMode = vk::PolygonMode::eFill;
         rasterizer.cullMode = vk::CullModeFlagBits::eBack;
-        rasterizer.frontFace = vk::FrontFace::eClockwise;
+        rasterizer.frontFace = vk::FrontFace::eCounterClockwise;
         rasterizer.depthBiasEnable = vk::False;
         rasterizer.lineWidth = 1.0f;
 
