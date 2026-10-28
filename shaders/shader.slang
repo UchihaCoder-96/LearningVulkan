@@ -33,5 +33,5 @@ VSOutput vertMain(VSInput input) {
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-    return ubo.color;
+    return float4(vertIn.color, 1.0) * ubo.color;
 }
