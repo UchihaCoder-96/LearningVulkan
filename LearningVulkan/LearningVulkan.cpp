@@ -26,7 +26,6 @@
 #include <vector>
 #include <cmath>
 
-
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
 constexpr int      MAX_FRAMES_IN_FLIGHT = 2;
@@ -59,28 +58,13 @@ struct Vertex {
 };
 
 const std::vector<Vertex> vertices = {
-    { { 0.0f,      -1.25f },{ 1.0f, 0.0f, 0.0f } },
-    { { 0.2940f,   -0.4045f },{ 1.0f, 0.5f, 0.0f } },
-    { { 1.1888f,   -0.3863f },{ 1.0f, 1.0f, 0.0f } },
-    { { 0.4755f,    0.1545f },{ 0.0f, 1.0f, 0.0f } },
-    { { 0.7348f,    1.0113f },{ 0.0f, 1.0f, 1.0f } },
-    { { 0.0f,       0.5f },{ 0.0f, 0.0f, 1.0f } },
-    { { -0.7348f,   1.0113f },{ 0.5f, 0.0f, 1.0f } },
-    { { -0.4755f,   0.1545f },{ 1.0f, 0.0f, 1.0f } },
-    { { -1.1888f,  -0.3863f },{ 1.0f, 0.5f, 0.5f } },
-    { { -0.2940f,  -0.4045f },{ 0.5f, 0.5f, 1.0f } }
-};
+    { { -0.5f, -0.5f },{ 1.0f, 0.0f, 0.0f } },
+    { { 0.5f, -0.5f },{ 0.0f, 1.0f, 0.0f } },
+    { { 0.5f, 0.5f },{ 0.0f, 0.0f, 1.0f } },
+    { { -0.5f, 0.5f },{ 1.0f, 1.0f, 1.0f } } };
 
 const std::vector<uint16_t> indices = {
-    0, 1, 9,
-    1, 2, 3,
-    1, 3, 9,
-    3, 4, 5,
-    3, 5, 9,
-    5, 6, 7,
-    5, 7, 9,
-    7, 8, 9
-};
+    0, 1, 2, 2, 3, 0 };
 
 struct UniformBufferObject
 {
@@ -115,20 +99,27 @@ private:
     vk::raii::Pipeline                  graphicsPipeline        = nullptr;
     vk::raii::DescriptorPool            descriptorPool          = nullptr;
     vk::raii::CommandPool               commandPool             = nullptr;
+
     vk::raii::Image                     textureImage            = nullptr;
     vk::raii::DeviceMemory              textureImageMemory      = nullptr;
+    vk::raii::ImageView                 textureImageView        = nullptr;
+    vk::raii::Sampler                   textureSampler          = nullptr;
+
     vk::raii::Buffer                    vertexBuffer            = nullptr;
     vk::raii::DeviceMemory              vertexBufferMemory      = nullptr;
     vk::raii::Buffer                    indexBuffer             = nullptr;
     vk::raii::DeviceMemory              indexBufferMemory       = nullptr;
+
     std::vector<vk::raii::Buffer>       uniformBuffers;
     std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
     std::vector<void*>                  uniformBuffersMapped;
+
     std::vector<vk::raii::DescriptorSet>             descriptorSets;
     std::vector<vk::raii::CommandBuffer>             commandBuffers;
     std::vector<vk::raii::Semaphore>                 presentCompleteSemaphores;
     std::vector<vk::raii::Semaphore>                 renderFinishedSemaphores;
     std::vector<vk::raii::Fence>                     inFlightFences;
+
     std::vector<vk::Image>              swapChainImages;
     std::vector<vk::raii::ImageView>    swapChainImageViews;
     vk::Extent2D                        swapChainExtent;
@@ -172,6 +163,8 @@ private:
         createGraphicsPipeline();
         createCommandPool();
         createTextureImage();
+        createTextureImageView();
+        createTextureSampler();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -179,6 +172,38 @@ private:
         createDescriptorSets();
         createCommandBuffers();
         createSyncObjects();
+    }
+
+    void createTextureImageView()
+    {
+        textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb);
+    }
+
+    void createTextureSampler()
+    {
+        vk::PhysicalDeviceProperties properties = physicalDevice.getProperties();
+        vk::SamplerCreateInfo samplerInfo{ .magFilter = vk::Filter::eLinear,
+                                            .minFilter = vk::Filter::eLinear,
+                                            .mipmapMode = vk::SamplerMipmapMode::eLinear,
+                                            .addressModeU = vk::SamplerAddressMode::eRepeat,
+                                            .addressModeV = vk::SamplerAddressMode::eRepeat,
+                                            .addressModeW = vk::SamplerAddressMode::eRepeat,
+                                            .mipLodBias = 0.0f,
+                                            .anisotropyEnable = vk::True,
+                                            .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+                                            .compareEnable = vk::False,
+                                            .compareOp = vk::CompareOp::eAlways };
+        textureSampler = vk::raii::Sampler(device, samplerInfo);
+    }
+
+    vk::raii::ImageView createImageView(vk::Image const& image, vk::Format format)
+    {
+        vk::ImageViewCreateInfo viewInfo{
+            .image = image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .subresourceRange = { .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1 } };
+        return vk::raii::ImageView(device, viewInfo);
     }
 
     void createTextureImage()
@@ -693,14 +718,10 @@ private:
     {
         assert(swapChainImageViews.empty());
 
-        vk::ImageViewCreateInfo imageViewCreateInfo{};
-        imageViewCreateInfo.viewType = vk::ImageViewType::e2D;
-        imageViewCreateInfo.format = swapChainSurfaceFormat.format;
-        imageViewCreateInfo.subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+        swapChainImageViews.reserve(swapChainImages.size());
         for (auto& image : swapChainImages)
         {
-            imageViewCreateInfo.image = image;
-            swapChainImageViews.emplace_back(device, imageViewCreateInfo);
+            swapChainImageViews.emplace_back(createImageView(image, swapChainSurfaceFormat.format));
         }
     }
 
@@ -931,6 +952,7 @@ private:
                             vk::PhysicalDeviceVulkan13Features,
                             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain {};
 
+        featureChain.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy = true;
         featureChain.get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters = true;
         auto& features13 = featureChain.get<vk::PhysicalDeviceVulkan13Features>();
         features13.dynamicRendering = true;
@@ -987,7 +1009,8 @@ private:
                                                              vk::PhysicalDeviceVulkan13Features,
                                                              vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
 
-        bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters &&
+        bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy &&
+                                        features.template get<vk::PhysicalDeviceVulkan11Features>().shaderDrawParameters &&
                                         features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
                                         features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState &&
                                         features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2;
