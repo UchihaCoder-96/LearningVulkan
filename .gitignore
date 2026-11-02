@@ -61,3 +61,7 @@ Thumbs.db
 *.suo
 *.VC.db
 *.VC.VC.opendb
+
+
+# Custom
+Ignored

@@ -1,5 +1,5 @@
 struct VSInput {
-    float2 inPosition;
+    float3 inPosition;
     float3 inColor;
     float2 inTexCoord;
 };
@@ -26,7 +26,7 @@ VSOutput vertMain(VSInput input) {
     output.pos = mul(
         ubo.proj,
         mul(ubo.view,
-            mul(ubo.model, float4(input.inPosition, 0.0, 1.0))
+            mul(ubo.model, float4(input.inPosition, 1.0))
         )
     );
     output.fragColor = input.inColor;
